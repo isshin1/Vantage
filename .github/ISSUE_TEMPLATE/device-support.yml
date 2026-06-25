@@ -86,13 +86,14 @@ body:
       label: Did a manual write actually work? (optional but very helpful)
       description: |
         Some EC attributes exist but the firmware silently ignores them. If you're
-        comfortable, test one and tell us whether the hardware reacted. Examples:
+        comfortable, test the charge limit and tell us whether the hardware reacted:
 
-          # charge cap to 80% — check the battery actually stops charging there
+          # cap charge at 80% — then check the battery actually stops there
           echo 80 | sudo tee /sys/class/power_supply/BAT0/charge_control_end_threshold
 
-          # ThinkPad fan needs this module option for control (RPM readout works without it)
-          # add `options thinkpad_acpi fan_control=1` to /etc/modprobe.d/ then reboot
+        (No need to enable manual fan control to file this — fan RPM readout works
+        without it, and `/proc/acpi/ibm/fan` already shows whether write-control is
+        available.)
       placeholder: "e.g. 'set end_threshold to 80, battery stopped charging at 80% — works'"
 
   - type: textarea
