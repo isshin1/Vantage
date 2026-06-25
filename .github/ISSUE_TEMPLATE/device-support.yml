@@ -1,0 +1,102 @@
+name: Device support request
+description: Ask for support for a Lenovo model that isn't fully working (ThinkPad, IdeaPad, Yoga, Legion)
+title: "[Device] <model name> — <what's missing>"
+labels: ["device-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping expand hardware coverage! Vantage talks to the EC through
+        kernel drivers — `ideapad_laptop` (VPC2004) on IdeaPad/Yoga/Legion, and
+        `thinkpad_acpi` on ThinkPads. Different drivers expose different sysfs paths,
+        so to add or fix a control we mostly need the **exact paths and values** your
+        machine exposes.
+
+        Please run the diagnostic script below and paste its **full output** — that
+        single block answers most of what we need.
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: From `cat /sys/class/dmi/id/product_version` (e.g. "ThinkPad X1 Carbon Gen 11")
+      placeholder: ThinkPad X1 Carbon Gen 11
+    validations:
+      required: true
+
+  - type: input
+    id: distro_kernel
+    attributes:
+      label: Distro and kernel
+      description: e.g. "Fedora 41, kernel 6.12.4"
+      placeholder: "Arch, 6.12.4-arch1-1"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: controls
+    attributes:
+      label: Which controls are missing or broken?
+      description: Tick everything that doesn't appear or doesn't work in the app.
+      options:
+        - label: Battery conservation / charge limit
+        - label: Fan mode
+        - label: Fan RPM readout
+        - label: Fn Lock
+        - label: Keyboard backlight
+        - label: Always-On USB
+        - label: Graphics mode (NVIDIA Optimus)
+        - label: Other (describe below)
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic output
+      description: |
+        Run this and paste the **entire** output. It only reads values — it changes nothing.
+      render: shell
+      value: |
+        # ---- copy from here, run in a terminal, paste the full output back ----
+        {
+          echo "### model";     cat /sys/class/dmi/id/product_name /sys/class/dmi/id/product_version
+          echo "### kernel";    uname -r
+          echo "### drivers";   lsmod | grep -E 'thinkpad_acpi|ideapad' || echo "(neither loaded)"
+          echo "### /proc/acpi/ibm"; ls /proc/acpi/ibm/ 2>/dev/null || echo "(none)"
+          echo "### fan";       cat /proc/acpi/ibm/fan 2>/dev/null || echo "(no /proc/acpi/ibm/fan)"
+          echo "### VPC (ideapad) device"; ls /sys/bus/platform/devices/VPC2004:* 2>/dev/null || echo "(no VPC2004)"
+          echo "### battery thresholds"
+          for b in /sys/class/power_supply/BAT*; do
+            echo "-- $b"; ls "$b" | grep -i charge
+            cat "$b"/charge_control_*_threshold 2>/dev/null
+          done
+          echo "### leds";      ls /sys/class/leds/
+          echo "### hwmon"
+          for h in /sys/class/hwmon/hwmon*; do
+            echo "$(cat "$h"/name 2>/dev/null): $(ls "$h" | grep -E 'fan|temp' | tr '\n' ' ')"
+          done
+          echo "### gpu";       lspci -nnk 2>/dev/null | grep -iA3 -E 'VGA|3D'
+        } 2>&1
+        # ---- to here ----
+    validations:
+      required: true
+
+  - type: textarea
+    id: manual_test
+    attributes:
+      label: Did a manual write actually work? (optional but very helpful)
+      description: |
+        Some EC attributes exist but the firmware silently ignores them. If you're
+        comfortable, test one and tell us whether the hardware reacted. Examples:
+
+          # charge cap to 80% — check the battery actually stops charging there
+          echo 80 | sudo tee /sys/class/power_supply/BAT0/charge_control_end_threshold
+
+          # ThinkPad fan needs this module option for control (RPM readout works without it)
+          # add `options thinkpad_acpi fan_control=1` to /etc/modprobe.d/ then reboot
+      placeholder: "e.g. 'set end_threshold to 80, battery stopped charging at 80% — works'"
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Screenshots of the app, what you expected vs. saw, links to the model's spec, etc.
