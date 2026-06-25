@@ -1,4 +1,4 @@
-.PHONY: install install-files uninstall install-legacy
+.PHONY: install install-files uninstall
 
 LIBDIR := /usr/lib/vantage
 
@@ -53,10 +53,3 @@ uninstall:
 	rm -f /usr/share/applications/vantage.desktop
 	rm -f /usr/share/applications/vantage-tray.desktop
 
-# Old zenity-based single script (kept for reference / fallback).
-install-legacy:
-	chmod +x ./install.sh
-	./install.sh
-	install -Dm644 ./icon.png /usr/share/icons/hicolor/scalable/apps/vantage.png
-	install -Dm644 ./vantage.desktop /usr/share/applications/vantage.desktop
-	install -Dm755 ./vantage.sh /usr/bin/vantage

@@ -82,8 +82,6 @@ Vantage is split into three components:
 
 State is read directly from sysfs (no root needed for reads). Both the window and tray share one client (`vantage_client.py`) so they behave identically. Unprivileged operations (microphone, Wi-Fi, power profile) run with no prompt.
 
-The original zenity-based script (`vantage.sh`) is kept as a legacy fallback and can be installed with `sudo make install-legacy`.
-
 ## Requirements
 
 - Python 3 + `python-gobject`

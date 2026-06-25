@@ -194,6 +194,10 @@ class Tray:
         if self._guard:
             return
         self.backend.set_vpc("fan_mode", val)
+        if val != "2":
+            # EC sysfs readback settles after ~300ms+ and passes through unmapped
+            # intermediate values; skip immediate rebuild to avoid showing stale state.
+            return
         self._after()
 
     def _set_profile(self, name):

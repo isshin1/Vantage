@@ -95,14 +95,7 @@ class VantageWindow(Adw.ApplicationWindow):
 
         thermal = self._group("Thermal")
         if "fan_mode" in st:
-            labels = [lbl for _v, lbl in FAN_MODES]
-            order = labels
-            self._combo(thermal, "fan_mode", "Fan Mode",
-                        "Cooling profile",
-                        labels,
-                        lambda s: order.index(FAN_LABELS[s["fan_mode"]])
-                        if s.get("fan_mode") in FAN_LABELS else None,
-                        lambda i: self.backend.set_vpc("fan_mode", FAN_MODES[i][0]))
+            self._add_fan_mode(thermal)
         if "fan_rpms" in st:
             self._add_fan_speed(thermal)
         self._maybe_add(thermal)
@@ -187,6 +180,53 @@ class VantageWindow(Adw.ApplicationWindow):
                     lambda s: self._profiles.index(s["power_profile"])
                     if s.get("power_profile") in self._profiles else None,
                     lambda i: self.backend.set_power_profile(self._profiles[i]))
+
+    def _add_fan_mode(self, group):
+        group._has_rows = True
+        labels = [lbl for _v, lbl in FAN_MODES]
+        row = Adw.ComboRow(title="Fan Mode", subtitle="Cooling profile",
+                           model=Gtk.StringList.new(labels))
+
+        def current_idx(s):
+            v = s.get("fan_mode")
+            return labels.index(FAN_LABELS[v]) if v in FAN_LABELS else None
+
+        idx = current_idx(self.state)
+        if idx is not None:
+            row.set_selected(idx)
+
+        def on_selected(r, _p):
+            if self._guard:
+                return
+            i = r.get_selected()
+            val, _lbl = FAN_MODES[i]
+            if val == "2":
+                # Dust Cleaning is transient: EC runs the cycle then resets fan_mode
+                # in sysfs back to the previous value, so a normal refresh would
+                # immediately revert the combo. Run the command, show a toast, and
+                # restore the previous selection ourselves without a sysfs round-trip.
+                self.backend.set_vpc("fan_mode", "2")
+                self._toast("Dust cleaning started — fans will return to normal shortly")
+                prev = current_idx(self.state)
+                if prev is not None:
+                    self._guard = True
+                    row.set_selected(prev)
+                    self._guard = False
+            else:
+                # The EC takes hundreds of ms to settle fan_mode sysfs after a
+                # write and may pass through unmapped intermediate values (e.g.
+                # "3"). An immediate refresh would read stale/garbage and revert
+                # the combo. Skip it — the UI already shows the right selection.
+                self.backend.set_vpc("fan_mode", val)
+
+        row.connect("notify::selected", on_selected)
+        group.add(row)
+
+        def upd(s):
+            i = current_idx(s)
+            if i is not None:
+                self._sync(row, "selected", i)
+        self._updaters.append(upd)
 
     def _add_kbd_backlight(self, group):
         try:
