@@ -45,7 +45,20 @@ meson setup build
 sudo meson install -C build
 ```
 
-Then launch **Lenovo Vantage** from your applications menu, or run `vantage` from the terminal. To start minimised to the tray, use `vantage --tray`.
+Then launch **Lenovo Vantage** from your applications menu, or run `vantage` from the terminal.
+
+### Command-line options
+
+```
+vantage [-h] [-t] [-d] [-v]
+
+  -h, --help     show this help message and exit
+  -t, --tray     start minimised to the system tray (no window)
+  -d, --debug    enable verbose debug logging to stderr
+  -v, --version  show the version and exit
+```
+
+Run with no options to open the settings window.
 
 ### Manual dependency install
 
@@ -84,12 +97,12 @@ sudo ninja -C build uninstall
 
 ## Architecture
 
-Vantage is split into three components:
+Vantage ships two executables backed by a shared Python package:
 
-- **`vantage`** — GTK4 + libadwaita settings window with grouped switch/combo rows for every control
-- **`vantage-helper`** — a minimal root helper that performs privileged sysfs writes. Invoked via `pkexec`, gated by polkit (`auth_admin_keep`) — you authenticate once per session, not per change. No long-running daemon
+- **`vantage`** — GTK4 + libadwaita settings window with grouped switch/combo rows for every control. The system-tray icon is built in (no separate process or daemon).
+- **`vantage-helper`** — a minimal root helper that performs privileged sysfs writes. Invoked via `pkexec`, gated by polkit (`auth_admin_keep`) — you authenticate once per session, not per change. No long-running daemon.
 
-State is read directly from sysfs (no root needed for reads). Unprivileged operations (microphone, Wi-Fi, power profile) run with no prompt.
+State is read directly from sysfs (no root needed for reads). Unprivileged operations (microphone, Wi-Fi, power profile) run with no prompt. The *Run in Background* preference is persisted with GSettings.
 
 ### Project layout
 
@@ -132,9 +145,17 @@ GSETTINGS_SCHEMA_DIR=$PWD/data PYTHONPATH=$PWD/src python3 -m vantage.main
 
 ## Requirements
 
+**Runtime**
 - Python 3 + `python-gobject`
 - GTK4 + libadwaita
 - `polkit` / `pkexec`
 - `networkmanager`
 - `pulseaudio` or `pipewire-pulse`
 - `power-profiles-daemon` *(optional — required for Power Profile control)*
+- a StatusNotifierItem host *(optional — required for the system tray; e.g. KDE, Waybar)*
+
+**Build**
+- `meson` + `ninja`
+- `gettext`
+- `glib2` schema tools (`glib-compile-schemas`)
+- `appstream` *(optional — used to validate the metainfo)*
