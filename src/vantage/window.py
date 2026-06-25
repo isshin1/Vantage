@@ -21,6 +21,7 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk, GLib  # noqa: E402
 
+from . import autostart  # noqa: E402
 from .client import (  # noqa: E402
     FAN_MODES, FAN_LABELS, CONSERVATION_LIMIT_PCT)
 
@@ -316,13 +317,28 @@ class VantageWindow(Adw.ApplicationWindow):
         popover = Gtk.Popover()
         popover.set_parent(button)
         grp = Adw.PreferencesGroup()
-        row = Adw.SwitchRow(
+
+        bg_row = Adw.SwitchRow(
             title=_("Run in Background"),
             subtitle=_("Keep Vantage in the system tray when closed"),
         )
-        row.set_active(self._config.get_run_in_background())
-        row.connect("notify::active", self._on_bg_toggled)
-        grp.add(row)
+        bg_row.set_active(self._config.get_run_in_background())
+        bg_row.connect("notify::active", self._on_bg_toggled)
+        grp.add(bg_row)
+
+        auto_row = Adw.SwitchRow(title=_("Start on Login"))
+        if autostart.desktop_supports_autostart():
+            auto_row.set_subtitle(_("Launch Vantage in the tray when you log in"))
+        else:
+            desktop = autostart.current_desktop() or _("your compositor")
+            # Bare WMs (Hyprland, sway, …) don't read ~/.config/autostart.
+            auto_row.set_subtitle(
+                _("%s may ignore autostart entries — add "
+                  "“exec-once = vantage --tray” to its config") % desktop)
+        auto_row.set_active(autostart.is_enabled())
+        auto_row.connect("notify::active", self._on_autostart_toggled)
+        grp.add(auto_row)
+
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.set_margin_top(8)
         box.set_margin_bottom(8)
@@ -342,6 +358,18 @@ class VantageWindow(Adw.ApplicationWindow):
         else:
             self._stop_sni()
             self.present()   # un-hide window if it was hidden
+
+    def _on_autostart_toggled(self, row, _pspec):
+        if self._guard:
+            return
+        try:
+            autostart.set_enabled(row.get_active())
+        except OSError:
+            log.exception("failed to update autostart entry")
+            self._toast(_("Could not update the autostart setting"))
+            self._guard = True
+            row.set_active(autostart.is_enabled())   # revert to actual state
+            self._guard = False
 
     def _start_sni(self):
         if self._sni is not None:
