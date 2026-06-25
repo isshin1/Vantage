@@ -16,9 +16,24 @@ from . import hardware as hw
 
 FALSEY = {"0", "false", "off", "no", ""}
 
+# Accepted values per VPC attribute. Keys are already whitelisted (so no path
+# traversal is possible), but pinning the values too keeps the privileged write
+# from poking unexpected bytes into the platform driver.
+VPC_ALLOWED = {
+    "conservation_mode": {"0", "1"},
+    "usb_charging":       {"0", "1"},
+    "fn_lock":            {"0", "1"},
+    "fan_mode":           {"0", "1", "2", "4"},
+}
+
 
 def _set(key, value):
     if key in hw.VPC_ATTRS:
+        allowed = VPC_ALLOWED.get(key)
+        if allowed is not None and value not in allowed:
+            sys.stderr.write(
+                "vantage-helper: rejected value %r for %s\n" % (value, key))
+            return False
         return hw.write_attr(hw.VPC_ATTRS[key], value)
     if key == "touchpad_inhibited":
         return hw.write_touchpad_inhibited(value.lower() not in FALSEY)

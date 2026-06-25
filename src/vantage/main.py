@@ -26,11 +26,12 @@ log.addHandler(logging.NullHandler())  # silent unless --debug adds a handler
 
 
 class VantageApp(Adw.Application):
-    def __init__(self, tray_only=False):
+    def __init__(self, tray_only=False, version=None):
         super().__init__(application_id=APP_ID,
                          flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.backend    = Vantage()
         self.config     = VantageConfig()
+        self.version    = version
         self._tray_only = tray_only
         self.win        = None
 
@@ -75,7 +76,7 @@ def main(version=None):
         log.setLevel(logging.DEBUG)
         log.debug("debug logging enabled; tray_only=%s", args.tray)
 
-    app = VantageApp(tray_only=args.tray)
+    app = VantageApp(tray_only=args.tray, version=version)
     # GApplication would otherwise try to parse our argv itself; pass an empty
     # list so argparse remains the single source of truth.
     return app.run([])

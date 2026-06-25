@@ -47,12 +47,12 @@ case $distro in
 
   "fedora")
     echo "Installing on Fedora"
-    rpm -q python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio &> /dev/null || sudo dnf install python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio meson ninja-build gettext glib2-devel appstream
+    rpm -q python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio meson ninja-build gettext glib2-devel appstream &> /dev/null || sudo dnf install python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio meson ninja-build gettext glib2-devel appstream
     ;;
 
   "opensuse-tumbleweed")
     echo "Installing on OpenSuse"
-    rpm -q python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio &> /dev/null || sudo zypper install python3-gobject gtk4 libadwaita typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 polkit NetworkManager pipewire-pulseaudio meson ninja gettext-tools glib2-tools appstream
+    rpm -q python3-gobject gtk4 libadwaita typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 polkit NetworkManager pipewire-pulseaudio meson ninja gettext-tools glib2-tools appstream &> /dev/null || sudo zypper install python3-gobject gtk4 libadwaita typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 polkit NetworkManager pipewire-pulseaudio meson ninja gettext-tools glib2-tools appstream
     ;;
 
   *)
@@ -70,11 +70,11 @@ case $distro in
             ;;
         "dnf")
             echo "Detected dnf package manager"
-            rpm -q python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio &> /dev/null || sudo dnf install python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio meson ninja-build gettext glib2-devel appstream
+            rpm -q python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio meson ninja-build gettext glib2-devel appstream &> /dev/null || sudo dnf install python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio meson ninja-build gettext glib2-devel appstream
             ;;
         "zypper")
             echo "Detected zypper package manager"
-            rpm -q python3-gobject gtk4 libadwaita polkit NetworkManager pipewire-pulseaudio &> /dev/null || sudo zypper install python3-gobject gtk4 libadwaita typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 polkit NetworkManager pipewire-pulseaudio meson ninja gettext-tools glib2-tools appstream
+            rpm -q python3-gobject gtk4 libadwaita typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 polkit NetworkManager pipewire-pulseaudio meson ninja gettext-tools glib2-tools appstream &> /dev/null || sudo zypper install python3-gobject gtk4 libadwaita typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1 polkit NetworkManager pipewire-pulseaudio meson ninja gettext-tools glib2-tools appstream
             ;;
         *)
             echo "Unable to detect compatible package manager, exiting."

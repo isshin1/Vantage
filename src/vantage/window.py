@@ -19,7 +19,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, Gtk, GLib  # noqa: E402
+from gi.repository import Adw, Gio, Gtk, GLib  # noqa: E402
 
 from . import autostart  # noqa: E402
 from .client import (  # noqa: E402
@@ -48,7 +48,6 @@ class VantageWindow(Adw.ApplicationWindow):
         self._updaters = []        # callables that re-sync a widget from state
         self._profiles = []        # raw power-profile ids, in display order
         self._fan_timer_id = 0     # live fan poll source id (0 = stopped)
-        self._settings_popover = None   # built once, reused (no per-click leak)
         self.state = backend.get_state()
 
         self.toasts = Adw.ToastOverlay()
@@ -62,14 +61,29 @@ class VantageWindow(Adw.ApplicationWindow):
         refresh.set_tooltip_text(_("Refresh"))
         refresh.connect("clicked", lambda _b: self.refresh())
         header.pack_start(refresh)
-        about = Gtk.Button(icon_name="dialog-information-symbolic")
-        about.set_tooltip_text(_("About this device"))
-        about.connect("clicked", self._show_about)
-        header.pack_end(about)
-        self._settings_btn = Gtk.Button(icon_name="preferences-system-symbolic")
-        self._settings_btn.set_tooltip_text(_("Settings"))
-        self._settings_btn.connect("clicked", self._show_settings)
-        header.pack_end(self._settings_btn)
+
+        # Window-scoped actions backing the primary menu (Adw.ApplicationWindow
+        # is not a GActionMap, so use an inserted action group).
+        actions = Gio.SimpleActionGroup()
+        for name, handler in (("preferences", self._show_settings),
+                              ("device-info", self._show_device_info),
+                              ("about", self._show_about)):
+            act = Gio.SimpleAction.new(name, None)
+            act.connect("activate", handler)
+            actions.add_action(act)
+        self.insert_action_group("win", actions)
+
+        menu = Gio.Menu()
+        menu.append(_("Preferences"), "win.preferences")
+        menu.append(_("Device Information"), "win.device-info")
+        about_section = Gio.Menu()
+        about_section.append(_("About Vantage"), "win.about")
+        menu.append_section(None, about_section)
+
+        menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic",
+                                  menu_model=menu)
+        menu_btn.set_tooltip_text(_("Main Menu"))
+        header.pack_end(menu_btn)
         toolbar.add_top_bar(header)
 
         self.page = Adw.PreferencesPage()
@@ -335,53 +349,38 @@ class VantageWindow(Adw.ApplicationWindow):
 
     # ---- tray / background ---------------------------------------------------
 
-    def _show_settings(self, button):
-        # Build the popover once and reuse it. A manually-parented GtkPopover is
-        # not freed until unparented, so creating a new one per click would leak
-        # the whole widget subtree each time.
-        if self._settings_popover is None:
-            self._settings_popover = self._build_settings_popover(button)
-        # Re-sync the toggles to live state before showing (guarded so the
-        # programmatic update doesn't fire the toggle handlers).
-        self._guard = True
-        self._bg_row.set_active(
-            self._config.get_run_in_background() or self._sni is not None)
-        self._auto_row.set_active(autostart.is_enabled())
-        self._guard = False
-        self._settings_popover.popup()
+    def _show_settings(self, *_args):
+        dialog = Adw.PreferencesDialog()
+        dialog.set_title(_("Preferences"))
+        page = Adw.PreferencesPage()
+        grp = Adw.PreferencesGroup(title=_("General"))
 
-    def _build_settings_popover(self, button):
-        popover = Gtk.Popover()
-        popover.set_parent(button)
-        grp = Adw.PreferencesGroup()
-
-        self._bg_row = Adw.SwitchRow(
+        bg_row = Adw.SwitchRow(
             title=_("Run in Background"),
             subtitle=_("Keep Vantage in the system tray when closed"),
         )
-        self._bg_row.connect("notify::active", self._on_bg_toggled)
-        grp.add(self._bg_row)
+        # Set state before connecting so the programmatic update is a no-op.
+        bg_row.set_active(
+            self._config.get_run_in_background() or self._sni is not None)
+        bg_row.connect("notify::active", self._on_bg_toggled)
+        grp.add(bg_row)
 
-        self._auto_row = Adw.SwitchRow(title=_("Start on Login"))
+        auto_row = Adw.SwitchRow(title=_("Start on Login"))
         if autostart.desktop_supports_autostart():
-            self._auto_row.set_subtitle(_("Launch Vantage in the tray when you log in"))
+            auto_row.set_subtitle(_("Launch Vantage in the tray when you log in"))
         else:
             desktop = autostart.current_desktop() or _("your compositor")
             # Bare WMs (Hyprland, sway, …) don't read ~/.config/autostart.
-            self._auto_row.set_subtitle(
+            auto_row.set_subtitle(
                 _("%s may ignore autostart entries — add "
                   "“exec-once = vantage --tray” to its config") % desktop)
-        self._auto_row.connect("notify::active", self._on_autostart_toggled)
-        grp.add(self._auto_row)
+        auto_row.set_active(autostart.is_enabled())
+        auto_row.connect("notify::active", self._on_autostart_toggled)
+        grp.add(auto_row)
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        box.set_margin_top(8)
-        box.set_margin_bottom(8)
-        box.set_margin_start(8)
-        box.set_margin_end(8)
-        box.append(grp)
-        popover.set_child(box)
-        return popover
+        page.add(grp)
+        dialog.add(page)
+        dialog.present(self)
 
     def _on_bg_toggled(self, row, _pspec):
         if self._guard:
@@ -434,6 +433,21 @@ class VantageWindow(Adw.ApplicationWindow):
 
     # ---- about ---------------------------------------------------------------
     def _show_about(self, *_args):
+        app = self.get_application()
+        about = Adw.AboutDialog(
+            application_name=_("Lenovo Vantage"),
+            application_icon="org.vantage.Vantage",
+            developer_name="isshin1",
+            version=getattr(app, "version", None) or "",
+            license_type=Gtk.License.GPL_3_0,
+            website="https://github.com/isshin1/vantage",
+            issue_url="https://github.com/isshin1/vantage/issues",
+            copyright="© 2026 isshin1",
+            comments=_("Native Lenovo hardware controls for Linux."),
+        )
+        about.present(self)
+
+    def _show_device_info(self, *_args):
         info = self.backend.system_info()
         dialog = Adw.Dialog()
         dialog.set_title(_("About This Device"))
