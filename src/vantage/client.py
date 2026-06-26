@@ -98,9 +98,26 @@ def have(cmd):
     return shutil.which(cmd) is not None
 
 
-def run(*args):
+# pkexec spawns a polkit/GLib stack that may show a password dialog, so its
+# timeout is generous; plain session tools (pactl/nmcli/...) never prompt and
+# should return promptly. An unbounded wait is what lets a hung firmware write
+# (think_lmi BIOS attributes can block in the EC) leak a stuck root process per
+# attempt until the session's thread/process limit is exhausted — at which point
+# the *next* pkexec can't even create its 'gmain' thread.
+HELPER_TIMEOUT = 90
+TOOL_TIMEOUT = 15
+
+
+def run(*args, timeout=None):
     try:
-        return subprocess.run(args, capture_output=True, text=True, check=False)
+        return subprocess.run(args, capture_output=True, text=True,
+                              check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Synthesize a failed result so callers see a clean reason instead of
+        # whatever the killed child left on its stderr.
+        return subprocess.CompletedProcess(
+            args, returncode=124, stdout="",
+            stderr="timed out after %ss (no response from hardware)" % timeout)
     except OSError:
         return None
 
@@ -126,9 +143,9 @@ class Vantage:
         )
         return ["pkexec", sys.executable, "-c", bootstrap, *args]
 
-    def _run_helper(self, *args):
+    def _run_helper(self, *args, timeout=HELPER_TIMEOUT):
         log.debug("helper: %s", " ".join(args))
-        r = run(*self._helper(*args))
+        r = run(*self._helper(*args), timeout=timeout)
         if r is None or r.returncode != 0:
             rc = "no-process" if r is None else r.returncode
             err = "" if r is None else (r.stderr or "").strip()
@@ -140,18 +157,20 @@ class Vantage:
 
     def authenticate(self):
         """Prime polkit once at launch (auth_admin_keep caches the grant)."""
-        return self._run_helper("auth")
+        # The one deliberate password prompt — don't time it out from under a
+        # user who's reaching for their keyboard.
+        return self._run_helper("auth", timeout=None)
 
     def serial(self):
         """Read the root-only system serial number via the helper, or None."""
-        r = run(*self._helper("serial"))
+        r = run(*self._helper("serial"), timeout=HELPER_TIMEOUT)
         if r is not None and r.returncode == 0:
             return (r.stdout or "").strip() or None
         return None
 
     def notify(self, msg):
         if have("notify-send"):
-            run("notify-send", "Vantage", msg)
+            run("notify-send", "Vantage", msg, timeout=TOOL_TIMEOUT)
 
     # ---- async wrappers (keep blocking work off the GTK main loop) ------------
     def get_state_async(self, on_done):
@@ -228,7 +247,7 @@ class Vantage:
     # ---- ThinkPad BIOS settings (think_lmi, root via helper) -----------------
     def get_bios_attr(self, attr):
         """Read a BIOS attribute's current value via the helper, or None."""
-        r = run(*self._helper("bios-get", attr))
+        r = run(*self._helper("bios-get", attr), timeout=HELPER_TIMEOUT)
         if r is not None and r.returncode == 0:
             return (r.stdout or "").strip() or None
         return None
@@ -253,33 +272,34 @@ class Vantage:
 
     # ---- session-level writes (no root) --------------------------------------
     def set_mic_on(self, on):
-        run("pactl", "set-source-mute", "@DEFAULT_SOURCE@", "0" if on else "1")
+        run("pactl", "set-source-mute", "@DEFAULT_SOURCE@", "0" if on else "1",
+            timeout=TOOL_TIMEOUT)
 
     def set_wifi_on(self, on):
-        run("nmcli", "radio", "wifi", "on" if on else "off")
+        run("nmcli", "radio", "wifi", "on" if on else "off", timeout=TOOL_TIMEOUT)
 
     def set_power_profile(self, name):
         # power-profiles-daemon owns platform_profile when present; otherwise
         # write the ACPI sysfs directly (root, via the helper).
         if have("powerprofilesctl"):
-            run("powerprofilesctl", "set", name)
+            run("powerprofilesctl", "set", name, timeout=TOOL_TIMEOUT)
         else:
             self._run_helper("set", "platform_profile", name)
 
     # ---- session-level reads -------------------------------------------------
     @staticmethod
     def _mic_source():
-        r = run("pactl", "get-source-mute", "@DEFAULT_SOURCE@")
+        r = run("pactl", "get-source-mute", "@DEFAULT_SOURCE@", timeout=TOOL_TIMEOUT)
         return r is not None and r.returncode == 0
 
     @staticmethod
     def _mic_muted():
-        r = run("pactl", "get-source-mute", "@DEFAULT_SOURCE@")
+        r = run("pactl", "get-source-mute", "@DEFAULT_SOURCE@", timeout=TOOL_TIMEOUT)
         return r is not None and "yes" in (r.stdout or "")
 
     @staticmethod
     def _wifi_on():
-        r = run("nmcli", "radio", "wifi")
+        r = run("nmcli", "radio", "wifi", timeout=TOOL_TIMEOUT)
         return r is not None and "enabled" in (r.stdout or "")
 
     @staticmethod
@@ -292,7 +312,7 @@ class Vantage:
         """
         if not have("powerprofilesctl"):
             return hw.read_platform_profile()
-        r = run("powerprofilesctl", "list")
+        r = run("powerprofilesctl", "list", timeout=TOOL_TIMEOUT)
         if r is None or r.returncode != 0:
             return None, []
         choices, current = [], None

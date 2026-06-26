@@ -267,7 +267,13 @@ class VantageWindow(Adw.ApplicationWindow):
             want = r.get_active()
             value = on_value if want else off_value
 
+            # think_lmi writes go through the EC/firmware and can be slow (or
+            # block outright). Hold the row insensitive until the write returns
+            # so a impatient double-toggle can't stack up pkexec helpers.
+            r.set_sensitive(False)
+
             def done(ok):
+                r.set_sensitive(True)
                 if ok is True:
                     if self.backend.bios_pending_reboot():
                         self._toast(
@@ -276,7 +282,13 @@ class VantageWindow(Adw.ApplicationWindow):
                     self._guard = True
                     r.set_active(not want)   # revert; write was rejected
                     self._guard = False
-                    self._toast(_("Could not change “%s”") % title)
+                    # The write was rejected, timed out, or the firmware ignored
+                    # it — all of which usually mean a reboot or a BIOS admin
+                    # password is in the way, not a bug in the app.
+                    self._toast(
+                        _("Couldn’t apply “%s” — the firmware didn’t accept it "
+                          "(it may need a reboot or a BIOS admin password)")
+                        % title)
 
             self.backend.call_async(
                 lambda: self.backend.set_bios_attr(attr, value), done)
