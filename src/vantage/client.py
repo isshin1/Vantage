@@ -65,6 +65,9 @@ FAN_MODES = [
 FAN_LABELS = {"133": "Super Silent", "0": "Super Silent", "1": "Standard",
               "2": "Dust Cleaning", "4": "Efficient Thermal Dissipation"}
 
+# ThinkPad manual fan levels (thinkpad_acpi /proc/acpi/ibm/fan), display order.
+FAN_LEVELS = hw.FAN_LEVELS
+
 # Lenovo (VPC2004) conservation mode is a fixed firmware cap; the threshold
 # isn't exposed via sysfs, so we surface the value. Newer firmware (e.g. Yoga
 # Pro 7i Gen 11) holds the battery at 80%; older ideapads used ~60%.
@@ -172,6 +175,13 @@ class Vantage:
             val = hw.read_attr(attr)
             if val is not None:
                 state[key] = val
+        # ThinkPads expose a settable charge limit instead of conservation_mode.
+        # Surfaced as an on/off cap (~80%); the two keys are mutually exclusive.
+        ct = hw.charge_thresholds()
+        if ct is not None:
+            _start, end = ct
+            state["charge_limit"] = "1" if end <= CONSERVATION_LIMIT_PCT else "0"
+            state["charge_end_threshold"] = str(end)
         tp = hw.read_touchpad_inhibited()
         if tp is not None:
             state["touchpad_inhibited"] = tp
@@ -182,6 +192,18 @@ class Vantage:
         fans = hw.read_fan_rpms()
         if fans:
             state["fan_rpms"] = ",".join(str(rpm) for _lbl, rpm in fans)
+        # ThinkPad manual fan level — only when thinkpad_acpi fan_control=1.
+        if hw.fan_writable():
+            lvl = hw.read_fan_level()
+            if lvl is not None:
+                state["fan_level"] = lvl
+
+        # ThinkPad BIOS settings (think_lmi). Presence only here — the values are
+        # root-only, so they're read lazily via the helper once authenticated.
+        if hw.bios_attr_present("AlwaysOnUSB"):
+            state["always_on_usb_bios"] = "present"
+        if hw.bios_attr_present("FnKeyAsPrimary"):
+            state["fnkey_primary_bios"] = "present"
 
         if self._mic_source():
             state["mic_on"] = "0" if self._mic_muted() else "1"
@@ -197,6 +219,32 @@ class Vantage:
     def set_vpc(self, attr, value):
         return self._run_helper("set", attr, str(value))
 
+    def set_charge_limit(self, on):
+        return self._run_helper("set", "charge_limit", "1" if on else "0")
+
+    def set_fan_level(self, level):
+        return self._run_helper("set", "fan_level", str(level))
+
+    # ---- ThinkPad BIOS settings (think_lmi, root via helper) -----------------
+    def get_bios_attr(self, attr):
+        """Read a BIOS attribute's current value via the helper, or None."""
+        r = run(*self._helper("bios-get", attr))
+        if r is not None and r.returncode == 0:
+            return (r.stdout or "").strip() or None
+        return None
+
+    def set_bios_attr(self, attr, value):
+        """Write a BIOS attribute via the helper. Returns True on success."""
+        return self._run_helper("bios-set", attr, value)
+
+    @staticmethod
+    def bios_pending_reboot():
+        return hw.bios_pending_reboot()
+
+    @staticmethod
+    def bios_admin_locked():
+        return hw.bios_admin_locked()
+
     def set_touchpad_enabled(self, enabled):
         return self._run_helper("set", "touchpad_inhibited", "0" if enabled else "1")
 
@@ -211,7 +259,12 @@ class Vantage:
         run("nmcli", "radio", "wifi", "on" if on else "off")
 
     def set_power_profile(self, name):
-        run("powerprofilesctl", "set", name)
+        # power-profiles-daemon owns platform_profile when present; otherwise
+        # write the ACPI sysfs directly (root, via the helper).
+        if have("powerprofilesctl"):
+            run("powerprofilesctl", "set", name)
+        else:
+            self._run_helper("set", "platform_profile", name)
 
     # ---- session-level reads -------------------------------------------------
     @staticmethod
@@ -231,9 +284,14 @@ class Vantage:
 
     @staticmethod
     def _power_profile():
-        """Return (current, [choices]) via power-profiles-daemon, or (None, [])."""
+        """Return (current, [choices]).
+
+        Prefer power-profiles-daemon; fall back to reading the ACPI
+        platform_profile sysfs directly so the control still appears on
+        machines without the daemon (e.g. a bare ThinkPad install).
+        """
         if not have("powerprofilesctl"):
-            return None, []
+            return hw.read_platform_profile()
         r = run("powerprofilesctl", "list")
         if r is None or r.returncode != 0:
             return None, []
@@ -257,6 +315,11 @@ class Vantage:
         """Return battery health/status dict, or None; live, unprivileged."""
         return hw.read_battery()
 
+    @staticmethod
+    def platform_family():
+        """Return 'ideapad', 'thinkpad', or 'other' for display purposes."""
+        return hw.platform_family()
+
     def system_info(self):
         """Return a dict of laptop info for the About view (serial is lazy)."""
         vendor = hw.read_dmi("sys_vendor")
@@ -266,6 +329,7 @@ class Vantage:
         device = " ".join(p for p in (vendor, model) if p) or "Unknown"
         return {
             "device": device,
+            "platform_family": self.platform_family(),
             "machine_type": hw.read_dmi("product_name"),
             "cpu": self._cpu_model(),
             "ram": self._ram_human(),

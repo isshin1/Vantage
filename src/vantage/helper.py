@@ -26,6 +26,11 @@ VPC_ALLOWED = {
     "fan_mode":           {"0", "1", "2", "4"},
 }
 
+# think_lmi BIOS attributes the helper may read/write. Pinning the attribute
+# names keeps the privileged process from touching arbitrary firmware settings;
+# the value is then validated against the attribute's own possible_values.
+BIOS_ATTRS = {"AlwaysOnUSB", "FnKeyAsPrimary"}
+
 
 def _set(key, value):
     if key in hw.VPC_ATTRS:
@@ -35,6 +40,24 @@ def _set(key, value):
                 "vantage-helper: rejected value %r for %s\n" % (value, key))
             return False
         return hw.write_attr(hw.VPC_ATTRS[key], value)
+    if key == "charge_limit":
+        # ThinkPad battery charge cap. "1" caps at ~80% to extend lifespan;
+        # "0" restores an effectively-unlimited window.
+        if value not in {"0", "1"}:
+            sys.stderr.write(
+                "vantage-helper: rejected value %r for charge_limit\n" % value)
+            return False
+        if value == "1":
+            return hw.write_charge_thresholds(75, 80)
+        return hw.write_charge_thresholds(95, 100)
+    if key == "platform_profile":
+        # write_platform_profile validates the value against the kernel's
+        # platform_profile_choices, so no separate whitelist is needed.
+        return hw.write_platform_profile(value)
+    if key == "fan_level":
+        # write_fan_level validates against hw.FAN_LEVELS and the fan_control
+        # gate, so the value is already constrained.
+        return hw.write_fan_level(value)
     if key == "touchpad_inhibited":
         return hw.write_touchpad_inhibited(value.lower() not in FALSEY)
     if key == "kbd_backlight":
@@ -63,7 +86,23 @@ def main(argv):
         if ok is None:
             return 2
         return 0 if ok else 1
-    sys.stderr.write("usage: vantage-helper auth | set <key> <value>\n")
+    if argv[0] == "bios-get" and len(argv) == 2:
+        if argv[1] not in BIOS_ATTRS:
+            sys.stderr.write("vantage-helper: bios attr not allowed: %r\n" % argv[1])
+            return 2
+        val = hw.read_bios_attr(argv[1])
+        if val is None:
+            return 1
+        sys.stdout.write(val + "\n")
+        return 0
+    if argv[0] == "bios-set" and len(argv) == 3:
+        if argv[1] not in BIOS_ATTRS:
+            sys.stderr.write("vantage-helper: bios attr not allowed: %r\n" % argv[1])
+            return 2
+        return 0 if hw.write_bios_attr(argv[1], argv[2]) else 1
+    sys.stderr.write(
+        "usage: vantage-helper auth | set <key> <value> | "
+        "bios-get <attr> | bios-set <attr> <value>\n")
     return 2
 
 
