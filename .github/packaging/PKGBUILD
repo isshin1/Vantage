@@ -1,0 +1,22 @@
+# Maintainer: isshin1
+# This PKGBUILD builds Vantage from the checked-out source tree. The release
+# workflow copies the repo into ./src-tree and sets pkgver before makepkg runs.
+pkgname=vantage
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Lenovo Vantage-style control panel for Linux laptops"
+arch=('any')
+url="https://github.com/isshin1/Vantage"
+license=('GPL-3.0-or-later')
+depends=('python-gobject' 'gtk4' 'libadwaita' 'polkit' 'networkmanager' 'glib2')
+makedepends=('meson' 'ninja' 'gettext' 'appstream')
+source=()
+
+build() {
+    arch-meson "$srcdir/src-tree" build
+    meson compile -C build
+}
+
+package() {
+    meson install -C build --destdir "$pkgdir"
+}

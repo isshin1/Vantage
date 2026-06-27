@@ -1,0 +1,118 @@
+name: Build release packages
+
+# Build distro packages whenever a GitHub Release is published, and attach them
+# to that release. You can also trigger it by hand against an existing tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and upload to (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Debian / Ubuntu / Mint  ->  .deb
+  # ---------------------------------------------------------------------------
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version and tag
+        id: ver
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Strip a leading "v" for the package version (v1.2.0 -> 1.2.0).
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson ninja-build gettext appstream desktop-file-utils \
+            libglib2.0-bin python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 \
+            libadwaita-1-0 ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+
+      - name: Build and stage install
+        run: |
+          meson setup build --prefix=/usr
+          meson compile -C build
+          DESTDIR="$PWD/destdir" meson install -C build
+
+      - name: Package .deb with fpm
+        run: |
+          chmod +x .github/packaging/deb-postinst.sh .github/packaging/deb-postrm.sh
+          fpm -s dir -t deb \
+            --name vantage \
+            --version "${{ steps.ver.outputs.version }}" \
+            --license "GPL-3.0-or-later" \
+            --maintainer "isshin1" \
+            --url "https://github.com/isshin1/Vantage" \
+            --description "Lenovo Vantage-style control panel for Linux laptops" \
+            --depends "python3-gi" \
+            --depends "gir1.2-gtk-4.0" \
+            --depends "gir1.2-adw-1" \
+            --depends "libadwaita-1-0" \
+            --depends "policykit-1" \
+            --depends "network-manager" \
+            --after-install .github/packaging/deb-postinst.sh \
+            --after-remove .github/packaging/deb-postrm.sh \
+            --deb-no-default-config-files \
+            -C destdir \
+            usr
+
+      - name: Upload .deb to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.ver.outputs.tag }}" ./*.deb --clobber
+
+  # ---------------------------------------------------------------------------
+  # Arch / CachyOS / Manjaro  ->  .pkg.tar.zst
+  # ---------------------------------------------------------------------------
+  arch:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install tooling
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel meson ninja git gettext appstream \
+            python-gobject gtk4 libadwaita polkit networkmanager glib2 \
+            github-cli
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve version and tag
+        id: ver
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .pkg.tar.zst with makepkg
+        run: |
+          # makepkg refuses to run as root, so build as an unprivileged user.
+          useradd -m builder
+          mkdir -p /tmp/pkg/src-tree
+          cp -a "$GITHUB_WORKSPACE/." /tmp/pkg/src-tree/
+          cp .github/packaging/PKGBUILD /tmp/pkg/PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.ver.outputs.version }}/" /tmp/pkg/PKGBUILD
+          chown -R builder:builder /tmp/pkg
+          su builder -c 'cd /tmp/pkg && makepkg -f --noconfirm'
+          cp /tmp/pkg/*.pkg.tar.zst "$GITHUB_WORKSPACE/"
+
+      - name: Upload .pkg.tar.zst to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          gh release upload "${{ steps.ver.outputs.tag }}" ./*.pkg.tar.zst --clobber
