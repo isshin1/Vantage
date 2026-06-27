@@ -23,7 +23,13 @@ from gi.repository import Adw, Gio, Gtk, GLib  # noqa: E402
 
 from . import autostart  # noqa: E402
 from .client import (  # noqa: E402
-    FAN_MODES, FAN_LABELS, CONSERVATION_LIMIT_PCT)
+    FAN_MODES, FAN_LABELS, FAN_LEVELS, CONSERVATION_LIMIT_PCT)
+
+# ThinkPad manual fan-level labels, aligned 1:1 with client.FAN_LEVELS
+# (["auto", "0".."7", "full-speed"]).
+FAN_LEVEL_LABELS = ([_("Auto")]
+                    + [_("Level %d") % i for i in range(8)]
+                    + [_("Full Speed")])
 
 log = logging.getLogger("vantage.window")
 
@@ -48,6 +54,9 @@ class VantageWindow(Adw.ApplicationWindow):
         self._updaters = []        # callables that re-sync a widget from state
         self._profiles = []        # raw power-profile ids, in display order
         self._fan_timer_id = 0     # live fan poll source id (0 = stopped)
+        self._fan_hold_id = 0      # watchdog re-arm source id (0 = stopped)
+        self._fan_hold_level = None  # manual fan level to keep alive, or None
+        self._bios_inits = []      # deferred BIOS value reads (run after auth)
         self.state = backend.get_state()
 
         self.toasts = Adw.ToastOverlay()
@@ -107,6 +116,10 @@ class VantageWindow(Adw.ApplicationWindow):
     def _on_authenticated(self, ok):
         if ok is not True:
             self._toast(_("Not authorized — changes may prompt for a password."))
+        # BIOS attribute values are root-only; read them now that polkit is
+        # primed, so the lazy reads don't trigger a second password prompt.
+        for init in self._bios_inits:
+            init()
 
     # ---- build ---------------------------------------------------------------
     def _build(self):
@@ -119,11 +132,22 @@ class VantageWindow(Adw.ApplicationWindow):
                          % CONSERVATION_LIMIT_PCT,
                          lambda s: s.get("conservation_mode") == "1",
                          lambda on: self.backend.set_vpc("conservation_mode", "1" if on else "0"))
+        elif "charge_limit" in st:
+            # ThinkPad equivalent of conservation mode (settable charge cap).
+            self._switch(power, "charge_limit", _("Battery Charge Limit"),
+                         _("Caps charge at ~%d%% to extend battery lifespan")
+                         % CONSERVATION_LIMIT_PCT,
+                         lambda s: s.get("charge_limit") == "1",
+                         lambda on: self.backend.set_charge_limit(on))
         if "usb_charging" in st:
             self._switch(power, "usb_charging", _("Always-On USB"),
                          _("Keep USB ports powered while suspended"),
                          lambda s: s.get("usb_charging") == "1",
                          lambda on: self.backend.set_vpc("usb_charging", "1" if on else "0"))
+        elif "always_on_usb_bios" in st:
+            self._add_bios_toggle(
+                power, "AlwaysOnUSB", _("Always-On USB"),
+                _("Keep USB ports powered while off · applies after reboot"))
         if "power_profile" in st:
             self._add_power_profile(power)
         if self.backend.battery_info():
@@ -133,6 +157,8 @@ class VantageWindow(Adw.ApplicationWindow):
         thermal = self._group(_("Thermal"))
         if "fan_mode" in st:
             self._add_fan_mode(thermal)
+        if "fan_level" in st:
+            self._add_fan_level(thermal)
         if "fan_rpms" in st:
             self._add_fan_speed(thermal)
         self._maybe_add(thermal)
@@ -149,6 +175,15 @@ class VantageWindow(Adw.ApplicationWindow):
                          _("Use multimedia keys without holding Fn"),
                          lambda s: s.get("fn_lock") == "0",
                          lambda on: self.backend.set_vpc("fn_lock", "0" if on else "1"))
+        elif "fnkey_primary_bios" in st:
+            # FnKeyAsPrimary: Enable = F1-F12 primary, Disable = media primary.
+            # Present it as the latter (what users mean by "media keys"), so the
+            # switch ON maps to the attribute's "Disable".
+            self._add_bios_toggle(
+                inp, "FnKeyAsPrimary", _("Media Keys"),
+                _("Use the top row for media without holding Fn · "
+                  "applies after reboot"),
+                on_value="Disable", off_value="Enable")
         if "touchpad_inhibited" in st:
             self._switch(inp, "touchpad_inhibited", _("Touchpad"),
                          _("Enable the laptop touchpad"),
@@ -213,6 +248,78 @@ class VantageWindow(Adw.ApplicationWindow):
                 self._sync(row, "selected", i)
         self._updaters.append(upd)
 
+    def _add_bios_toggle(self, group, attr, title, subtitle,
+                         on_value="Enable", off_value="Disable"):
+        """An on/off BIOS setting via think_lmi.
+
+        The switch maps to ``on_value``/``off_value`` (override when the natural
+        on-state is the attribute's "Disable", e.g. FnKeyAsPrimary where media
+        keys are primary when the attribute is Disabled).
+
+        The current value is root-only, so it's read lazily after polkit is
+        primed (registered in self._bios_inits, run from _on_authenticated).
+        Writes go through the helper and may only apply after a reboot. The row
+        stays insensitive until the value is known, or if a BIOS Admin password
+        gates writes.
+        """
+        group._has_rows = True
+        row = Adw.SwitchRow(title=title, subtitle=subtitle)
+        row.set_sensitive(False)
+
+        def on_toggle(r, _p):
+            if self._guard:
+                return
+            want = r.get_active()
+            value = on_value if want else off_value
+
+            # think_lmi writes go through the EC/firmware and can be slow (or
+            # block outright). Hold the row insensitive until the write returns
+            # so a impatient double-toggle can't stack up pkexec helpers.
+            r.set_sensitive(False)
+
+            def done(ok):
+                r.set_sensitive(True)
+                if ok is True:
+                    if self.backend.bios_pending_reboot():
+                        self._toast(
+                            _("“%s” will take effect after a reboot") % title)
+                else:
+                    self._guard = True
+                    r.set_active(not want)   # revert; write was rejected
+                    self._guard = False
+                    # The write was rejected, timed out, or the firmware ignored
+                    # it — all of which usually mean a reboot or a BIOS admin
+                    # password is in the way, not a bug in the app.
+                    self._toast(
+                        _("Couldn’t apply “%s” — the firmware didn’t accept it "
+                          "(it may need a reboot or a BIOS admin password)")
+                        % title)
+
+            self.backend.call_async(
+                lambda: self.backend.set_bios_attr(attr, value), done)
+
+        row.connect("notify::active", on_toggle)
+        group.add(row)
+
+        def init():
+            if self.backend.bios_admin_locked():
+                row.set_subtitle(_("Managed by BIOS (admin password set)"))
+                return
+
+            def got(val):
+                if isinstance(val, str):
+                    self._guard = True
+                    row.set_active(val.strip().lower() == on_value.lower())
+                    self._guard = False
+                    row.set_sensitive(True)
+                else:
+                    row.set_subtitle(_("Unavailable"))
+
+            self.backend.call_async(
+                lambda: self.backend.get_bios_attr(attr), got)
+
+        self._bios_inits.append(init)
+
     def _add_power_profile(self, group):
         choices = [c for c in self.state["power_profile_choices"].split(",") if c]
         self._profiles = choices
@@ -270,6 +377,69 @@ class VantageWindow(Adw.ApplicationWindow):
             if i is not None:
                 self._sync(row, "selected", i)
         self._updaters.append(upd)
+
+    def _add_fan_level(self, group):
+        # Manual ThinkPad fan control. Faithful to thinkfan's safety model: a
+        # manual level arms the EC watchdog (auto-reverts if we stop writing),
+        # we re-arm it while the window is visible, and hand control back to
+        # 'auto' the moment the window is hidden/closed — so the fan can never
+        # stay pinned when Vantage isn't watching.
+        group._has_rows = True
+        row = Adw.ComboRow(
+            title=_("Fan Control"),
+            subtitle=_("Manual fan level — reverts to Auto when Vantage closes"),
+            model=Gtk.StringList.new(FAN_LEVEL_LABELS))
+
+        def current_idx(s):
+            v = s.get("fan_level")
+            return FAN_LEVELS.index(v) if v in FAN_LEVELS else 0
+
+        row.set_selected(current_idx(self.state))
+
+        def on_selected(r, _p):
+            if self._guard:
+                return
+            level = FAN_LEVELS[r.get_selected()]
+            self._fan_hold_level = None if level == "auto" else level
+            self.backend.call_async(lambda: self.backend.set_fan_level(level))
+            if level == "auto":
+                self._stop_fan_hold()
+            else:
+                self._start_fan_hold()
+
+        row.connect("notify::selected", on_selected)
+        group.add(row)
+        self._updaters.append(
+            lambda s: self._sync(row, "selected", current_idx(s)))
+        # Re-arm while visible; release (hand back to auto) when hidden/closed.
+        self.connect("map", lambda *_a: self._start_fan_hold())
+        self.connect("unmap", lambda *_a: self._release_fan_hold())
+
+    def _start_fan_hold(self):
+        if not self._fan_hold_level or self._fan_hold_id or not self.get_mapped():
+            return
+        self._rearm_fan_hold()   # apply immediately on (re)show
+        # Re-arm well inside the EC's watchdog window (FAN_WATCHDOG_SECS=120).
+        self._fan_hold_id = GLib.timeout_add_seconds(90, self._rearm_fan_hold)
+
+    def _rearm_fan_hold(self):
+        level = self._fan_hold_level
+        if not level:
+            self._fan_hold_id = 0
+            return False
+        self.backend.call_async(lambda: self.backend.set_fan_level(level))
+        return True
+
+    def _stop_fan_hold(self):
+        if self._fan_hold_id:
+            GLib.source_remove(self._fan_hold_id)
+            self._fan_hold_id = 0
+
+    def _release_fan_hold(self):
+        self._stop_fan_hold()
+        if self._fan_hold_level:
+            # Window gone: return the fan to the EC straight away.
+            self.backend.call_async(lambda: self.backend.set_fan_level("auto"))
 
     def _add_kbd_backlight(self, group):
         try:
@@ -378,9 +548,10 @@ class VantageWindow(Adw.ApplicationWindow):
     def _on_gpu_switch_done(self, ok):
         self._set_gpu_busy(False)
         if ok is not True:
-            # The helper already surfaced the real error via notify(); add a toast
-            # so it's visible in-window too.
-            self._toast(_("Could not switch graphics mode"))
+            detail = ok if isinstance(ok, str) else ""
+            msg = (_("Could not switch graphics mode — %s") % detail
+                   if detail else _("Could not switch graphics mode"))
+            self._toast(msg)
         self.refresh()
 
     @staticmethod
@@ -601,6 +772,10 @@ class VantageWindow(Adw.ApplicationWindow):
             return r
 
         row(_("Device"), info["device"])
+        family = {"thinkpad": "ThinkPad", "ideapad": "IdeaPad / Yoga"}.get(
+            info.get("platform_family"))
+        if family:
+            row(_("Platform"), family)
         if info.get("machine_type"):
             row(_("Machine Type"), info["machine_type"])
         row(_("Processor"), info["cpu"])

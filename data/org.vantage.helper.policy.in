@@ -13,7 +13,7 @@
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <!-- Cache the authorization for the rest of the session (ask once). -->
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_self_keep</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">@BINDIR@/vantage-helper</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>

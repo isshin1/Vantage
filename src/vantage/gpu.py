@@ -115,11 +115,17 @@ def applied_mode():
     Writing/removing the blacklist files changes current_mode() instantly, but
     the live GPU state only changes on reboot. The running state is read straight
     from the bus: in hybrid the NVIDIA PCI device is present; in integrated the
-    boot-time udev rule has removed it. So a present device means we booted
-    hybrid, its absence means we booted integrated. Comparing applied_mode() with
-    current_mode() tells the UI whether a reboot is still pending.
+    boot-time udev rule has removed it.
+
+    When the device is absent there are two possibilities: the udev rule fired
+    (integrated boot), or the card is in D3cold runtime power-off (hybrid boot).
+    These look identical via a live PCI scan, so we use the on-disk config as a
+    tiebreaker — if our files are in place we asked for integrated, so that's
+    what booted; otherwise the card is just asleep and we're still in hybrid.
     """
-    return "hybrid" if nvidia_present() else "integrated"
+    if nvidia_present():
+        return "hybrid"
+    return current_mode()
 
 
 def available():
